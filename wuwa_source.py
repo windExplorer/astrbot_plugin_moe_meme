@@ -155,6 +155,25 @@ class WuwaSource:
             sticker_id=str(data.get("id") or ""),
         )
 
+    async def download(self, sticker: Sticker) -> bytes:
+        """下载表情图片字节（票券链的 307 跳转由 aiohttp 自动跟随）。"""
+        session = await self._ensure_session()
+        try:
+            async with session.get(sticker.url) as resp:
+                if resp.status != 200:
+                    raise SourceError(
+                        f"HTTP_{resp.status}", f"图片下载返回 {resp.status}"
+                    )
+                return await resp.read()
+        except SourceError:
+            raise
+        except asyncio.TimeoutError:
+            raise SourceError("timeout", "图片下载超时") from None
+        except aiohttp.ClientError as e:
+            raise SourceError(
+                "network", f"图片下载网络异常（{e.__class__.__name__}）"
+            ) from e
+
     async def characters(self, force: bool = False) -> dict[str, int]:
         """角色名 → 张数（archive-index 聚合，TTL 24h）。失败抛 SourceError。"""
         now = time.monotonic()

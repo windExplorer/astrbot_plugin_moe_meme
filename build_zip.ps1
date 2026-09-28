@@ -63,6 +63,7 @@ $includeList = @(
     "main.py",
     "wuwa_source.py",
     "sticker_gate.py",
+    "sticker_cache.py",
     "_conf_schema.json",
     "metadata.yaml",
     "README.md",

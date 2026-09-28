@@ -25,6 +25,18 @@
     "default": 20,
     "hint": "会话内最近 N 张不重复，0 = 关闭去重"
   },
+  "at_sender": {
+    "description": "指令发送时 @ 触发者",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后 /表情包 出图会先 @ 发指令的人；默认不 @"
+  },
+  "cache_max_files": {
+    "description": "本地缓存上限（张）",
+    "type": "int",
+    "default": 500,
+    "hint": "表情图会先存到本地再发送（更稳更快，目录 data/plugin_data/astrbot_plugin_moe_meme/cache），超过自动淘汰最旧的，0 = 不淘汰"
+  },
   "api_token": {
     "description": "站方 API Token",
     "type": "string",
@@ -112,6 +124,50 @@
           "666": ""
         },
         "hint": "触发词 → 角色名（空 = 随机）。同一消息命中多个词时取最长词"
+      }
+    },
+    "default": {}
+  },
+  "reply_sticker": {
+    "description": "回复概率跟图",
+    "type": "object",
+    "hint": "bot 每次 LLM 回复后按概率决定是否跟一张表情（仅对已开启主动发送的会话生效）",
+    "items": {
+      "enable": {
+        "description": "启用",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关；非流式回复时表情并入文字同一条消息，流式时在回复后单独补发"
+      },
+      "probability": {
+        "description": "触发概率",
+        "type": "float",
+        "default": 0.1,
+        "hint": "0~1，每次 LLM 回复实际跟图概率"
+      },
+      "character": {
+        "description": "固定角色",
+        "type": "string",
+        "default": "",
+        "hint": "跟图固定用某角色（如 爱弥斯），留空 = 全库随机"
+      },
+      "cooldown_minutes": {
+        "description": "冷却分钟",
+        "type": "int",
+        "default": 10,
+        "hint": "同会话两次主动表情的最小间隔（三类主动共享状态）"
+      },
+      "daily_cap": {
+        "description": "每日上限",
+        "type": "int",
+        "default": 20,
+        "hint": "每会话每天主动表情上限（三类主动共享），0 = 不限"
+      },
+      "quiet_hours": {
+        "description": "安静时段",
+        "type": "string",
+        "default": "01:00-08:00",
+        "hint": "此时间段不主动发送，格式 HH:MM-HH:MM，留空关闭"
       }
     },
     "default": {}

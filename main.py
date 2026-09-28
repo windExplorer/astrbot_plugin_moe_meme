@@ -12,17 +12,19 @@
 # GreedyStr 哨兵（default is GreedyStr），字符串化注解会让「/表情包」无参调用失效。
 
 import importlib
+import os
 import random
 from datetime import datetime
+from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import Image
-from astrbot.api.star import Context, Star, register
+from astrbot.api.message_components import At, Image
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.star.filter.event_message_type import EventMessageType
 
-from . import sticker_gate, wuwa_source
+from . import sticker_cache, sticker_gate, wuwa_source
 
 HELP_TEXT = (
     "萌萌表情包（数据源：表情包仓鼠库 emoji.wuwa.games，鸣潮玩家众筹整理）\n"
@@ -51,9 +53,9 @@ class MoeMemePlugin(Star):
         super().__init__(context)
         # AstrBot 热更新只重载 main.py，依赖子模块会残留在 sys.modules 里继续跑旧代码。
         # 这里按依赖顺序（被依赖者在前）强制重载并重新绑定全局名（同 box/anima 的做法）。
-        global sticker_gate, wuwa_source
+        global sticker_gate, wuwa_source, sticker_cache
         try:
-            for _dep_name in ("sticker_gate", "wuwa_source"):
+            for _dep_name in ("sticker_cache", "sticker_gate", "wuwa_source"):
                 try:
                     _mod = importlib.import_module(f"{__package__}.{_dep_name}")
                     importlib.reload(_mod)
@@ -61,9 +63,9 @@ class MoeMemePlugin(Star):
                     logger.warning(
                         f"[萌萌表情包] {_dep_name} 强制重载失败（沿用已加载模块）: {_dep_err}"
                     )
-            from . import sticker_gate as _sg, wuwa_source as _ws
+            from . import sticker_cache as _sc, sticker_gate as _sg, wuwa_source as _ws
 
-            sticker_gate, wuwa_source = _sg, _ws
+            sticker_cache, sticker_gate, wuwa_source = _sc, _sg, _ws
         except Exception as _reload_err:
             logger.warning(
                 f"[萌萌表情包] 依赖模块重载流程异常（沿用已加载模块）: {_reload_err}"
@@ -73,6 +75,11 @@ class MoeMemePlugin(Star):
         self.source: "wuwa_source.WuwaSource | None" = None
         # 会话 UMO -> 闸门状态（指令去重 + 主动发送冷却/限额，全部内存态，重启清零即可）
         self._gate_states: dict[str, "sticker_gate.GateState"] = {}
+        # 本地表情缓存：目录在 initialize() 建；id -> 文件路径 的内存索引
+        self.cache_dir: "Path | None" = None
+        self._sticker_files: dict[str, str] = {}
+        # 回复概率跟图在本事件上的暂存键（on_llm_response 写，decorating/after_sent 消费）
+        self._reply_extra = "moe_meme_reply_sticker"
 
     async def initialize(self) -> None:
         """生命周期钩子：异常会导致整个插件加载失败，这里全程兜底。"""
@@ -82,6 +89,13 @@ class MoeMemePlugin(Star):
         except Exception as e:
             self.source = None
             logger.error(f"[萌萌表情包] 数据源初始化失败（指令将不可用）: {e}")
+        try:
+            # 走 StarTools 的 data/plugin_data/<名>/，插件更新被 remove_dir 也不会清掉缓存
+            self.cache_dir = Path(StarTools.get_data_dir("astrbot_plugin_moe_meme")) / "cache"
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.cache_dir = None
+            logger.warning(f"[萌萌表情包] 本地缓存目录不可用（将直发票券链接）: {e}")
 
     async def terminate(self) -> None:
         if self.source is not None:
@@ -178,6 +192,52 @@ class MoeMemePlugin(Star):
             counts = None
         return wuwa_source.resolve_character(query, counts, self._aliases())
 
+    def _cache_max_files(self) -> int:
+        try:
+            raw = self._cfg().get("cache_max_files")
+            return 500 if raw is None else max(0, int(raw))
+        except (TypeError, ValueError):
+            return 500
+
+    async def _acquire_local(self, stk: "wuwa_source.Sticker") -> "str | None":
+        """把表情落到本地缓存并返回文件路径；失败返回 None（调用方回退直发票券链）。
+
+        站方图片链是约 16 分钟有效的临时票券，落盘后发送更稳更快；
+        仅作本机器人发送用的运行时缓存（更新插件不清掉，超过上限自动淘汰最旧）。
+        """
+        if self.cache_dir is None:
+            return None
+        sid = stk.sticker_id
+        cached = self._sticker_files.get(sid)
+        if cached and os.path.isfile(cached):
+            return cached
+        existing = sticker_cache.find_existing(self.cache_dir, sid)
+        if existing is not None:
+            self._sticker_files[sid] = str(existing)
+            return str(existing)
+        try:
+            data = await self.source.download(stk)
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 本地缓存下载失败（回退直发链接）: {e}")
+            return None
+        path = sticker_cache.store(self.cache_dir, sid, stk.fmt, data)
+        if path is None:
+            return None
+        if len(self._sticker_files) > 2000:
+            self._sticker_files.clear()  # 内存索引防膨胀；文件还在，find_existing 能找回
+        self._sticker_files[sid] = str(path)
+        try:
+            sticker_cache.prune(self.cache_dir, self._cache_max_files())
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 缓存淘汰失败: {e}")
+        return str(path)
+
+    def _image_component(self, stk: "wuwa_source.Sticker", path: "str | None") -> Image:
+        """优先本地文件，缓存不可用时回退站方票券链。"""
+        if path:
+            return Image.fromFileSystem(path)
+        return Image.fromURL(stk.url)
+
     # ---------- 指令 ----------
 
     @filter.command("表情包")
@@ -227,7 +287,12 @@ class MoeMemePlugin(Star):
             yield event.plain_result("表情包拉取失败，稍后再试。")
             return
         self._gate_state(umo).remember_recent(stk.sticker_id, self._dedup_keep())
-        yield event.image_result(stk.url)
+        path = await self._acquire_local(stk)
+        result = event.image_result(path) if path else event.image_result(stk.url)
+        if self._cfg().get("at_sender", False):
+            # 可选 @ 触发者（默认不 @）：把 At 组件插到图前面
+            result.chain.insert(0, At(qq=event.get_sender_id()))
+        yield result
 
     async def _list_text(self) -> str:
         try:
@@ -321,7 +386,8 @@ class MoeMemePlugin(Star):
             yield "表情包获取失败，请自然地继续对话，不要重试。"
             return
         try:
-            await event.send(MessageChain(chain=[Image.fromURL(stk.url)]))
+            path = await self._acquire_local(stk)
+            await event.send(MessageChain(chain=[self._image_component(stk, path)]))
         except Exception as e:
             logger.error(f"[萌萌表情包] llm 工具发送失败: {e}")
             yield "表情包发送失败，请忽略并继续对话。"
@@ -384,7 +450,8 @@ class MoeMemePlugin(Star):
             logger.warning(f"[萌萌表情包] 关键词触发拉取失败: {e}")
             return
         try:
-            await event.send(MessageChain(chain=[Image.fromURL(stk.url)]))
+            path = await self._acquire_local(stk)
+            await event.send(MessageChain(chain=[self._image_component(stk, path)]))
         except Exception as e:
             logger.warning(f"[萌萌表情包] 关键词触发发送失败: {e}")
             return
@@ -395,3 +462,95 @@ class MoeMemePlugin(Star):
             dedup_keep=self._dedup_keep(),
         )
         logger.info(f"[萌萌表情包] 关键词触发发送表情：{stk.character or '随机'}")
+
+    # ---------- 主动发送 3：回复概率跟图（bot 每次回复按概率决定是否带一张表情） ----------
+
+    @filter.on_llm_response()
+    async def on_llm_reply(self, event: AstrMessageEvent, response=None):
+        """LLM 回复完成后按概率决定是否跟一张表情；命中则暂存到事件上，
+        由 on_decorating_result（非流式，并入回复消息）或 after_message_sent（兜底，单独补发）消费。"""
+        try:
+            self._reply_sticker_tick(event)
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 回复跟图判定异常（已忽略）: {e}")
+
+    async def _reply_sticker_tick(self, event: AstrMessageEvent) -> None:
+        sub = self._sub("reply_sticker")
+        if not sub.get("enable", False):
+            return
+        umo = event.unified_msg_origin
+        if not self._in_proactive(umo):
+            return
+        try:
+            prob = float(sub.get("probability", 0.1))
+        except (TypeError, ValueError):
+            prob = 0.1
+        if random.random() >= max(0.0, min(1.0, prob)):
+            return
+        reason = self._gate_check(umo, sub)
+        if reason:
+            return
+        if self.source is None:
+            return
+        char = str(sub.get("character") or "").strip()
+        try:
+            resolved = await self._resolve(char) if char else None
+            stk = await self._fetch_sticker(resolved or (char or None), umo)
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 回复跟图拉取失败: {e}")
+            return
+        path = await self._acquire_local(stk)
+        if not path and not stk.url:
+            return
+        event.set_extra(
+            self._reply_extra, {"path": path, "url": stk.url, "id": stk.sticker_id}
+        )
+
+    def _reply_sticker_component(self, payload: dict) -> Image:
+        if payload.get("path"):
+            return Image.fromFileSystem(payload["path"])
+        return Image.fromURL(payload.get("url") or "")
+
+    @filter.on_decorating_result()
+    async def attach_reply_sticker(self, event: AstrMessageEvent):
+        """非流式：把概率命中的表情并进本轮回复链（文字 + 图一条消息）。"""
+        try:
+            payload = event.get_extra(self._reply_extra)
+            if not payload:
+                return
+            event.set_extra(self._reply_extra, None)
+            result = event.get_result()
+            if result is None or not isinstance(getattr(result, "chain", None), list):
+                return
+            result.chain.append(self._reply_sticker_component(payload))
+            sub = self._sub("reply_sticker")
+            sticker_gate.record(
+                self._gate_state(event.unified_msg_origin),
+                datetime.now(),
+                sticker_id=str(payload.get("id") or ""),
+                dedup_keep=self._dedup_keep(),
+            )
+            logger.info(
+                f"[萌萌表情包] 回复跟图已并入消息（probability={sub.get('probability')}）"
+            )
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 回复跟图挂载失败: {e}")
+
+    @filter.after_message_sent()
+    async def send_reply_sticker_fallback(self, event: AstrMessageEvent):
+        """流式输出等 on_decorating_result 不生效的场景：回复发出后单独补发。"""
+        try:
+            payload = event.get_extra(self._reply_extra)
+            if not payload:
+                return
+            event.set_extra(self._reply_extra, None)
+            await event.send(MessageChain(chain=[self._reply_sticker_component(payload)]))
+            sticker_gate.record(
+                self._gate_state(event.unified_msg_origin),
+                datetime.now(),
+                sticker_id=str(payload.get("id") or ""),
+                dedup_keep=self._dedup_keep(),
+            )
+            logger.info("[萌萌表情包] 回复跟图已补发（decorating 未消费）")
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 回复跟图兜底发送失败: {e}")
