@@ -1,0 +1,119 @@
+{
+  "whitelist_sessions": {
+    "description": "指令白名单（会话 UMO）",
+    "type": "list",
+    "items": { "type": "string" },
+    "default": [],
+    "hint": "允许使用 /表情包 的会话列表。留空 = 所有会话可用。推荐用指令管理：/表情包 白名单 开启"
+  },
+  "proactive_sessions": {
+    "description": "主动发送会话",
+    "type": "list",
+    "items": { "type": "string" },
+    "default": [],
+    "hint": "允许主动发表情的会话。必须显式开启（不随白名单的「空=全放行」），/表情包 主动 开启"
+  },
+  "aliases": {
+    "description": "角色别名表",
+    "type": "dict",
+    "default": {},
+    "hint": "用户简称 → 站方角色全名，如 小爱=爱弥斯。改完 /表情包 简称 即生效"
+  },
+  "recent_dedup": {
+    "description": "会话去重张数",
+    "type": "int",
+    "default": 20,
+    "hint": "会话内最近 N 张不重复，0 = 关闭去重"
+  },
+  "api_token": {
+    "description": "站方 API Token",
+    "type": "string",
+    "default": "",
+    "hint": "emoji.wuwa.games 的 Token（可选）。官方未公布携带方式，暂按 Bearer 头实现，留空即匿名"
+  },
+  "llm_sticker": {
+    "description": "LLM 自主发表情",
+    "type": "object",
+    "hint": "对话中由模型自主决定是否发表情（工具 send_sticker），仅对主动发送会话生效",
+    "items": {
+      "enable": {
+        "description": "启用",
+        "type": "bool",
+        "default": true,
+        "hint": "总开关，仍受冷却/限额/安静时段约束"
+      },
+      "cooldown_minutes": {
+        "description": "冷却分钟",
+        "type": "int",
+        "default": 10,
+        "hint": "同会话两次主动表情的最小间隔（两类主动共享状态）"
+      },
+      "daily_cap": {
+        "description": "每日上限",
+        "type": "int",
+        "default": 20,
+        "hint": "每会话每天主动表情上限（两类主动共享），0 = 不限"
+      },
+      "quiet_hours": {
+        "description": "安静时段",
+        "type": "string",
+        "default": "01:00-08:00",
+        "hint": "此时间段不主动发送，格式 HH:MM-HH:MM，留空关闭"
+      }
+    },
+    "default": {}
+  },
+  "keyword_sticker": {
+    "description": "关键词概率触发",
+    "type": "object",
+    "hint": "群消息命中触发词时按概率发表情，默认关闭，仅对主动发送会话生效",
+    "items": {
+      "enable": {
+        "description": "启用",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关；开启后仍受概率/冷却/限额/安静时段约束"
+      },
+      "probability": {
+        "description": "触发概率",
+        "type": "float",
+        "default": 0.04,
+        "hint": "0~1，命中触发词后实际发表情的概率"
+      },
+      "cooldown_minutes": {
+        "description": "冷却分钟",
+        "type": "int",
+        "default": 30,
+        "hint": "同会话两次主动表情的最小间隔（两类主动共享状态）"
+      },
+      "daily_cap": {
+        "description": "每日上限",
+        "type": "int",
+        "default": 20,
+        "hint": "每会话每天主动表情上限（两类主动共享），0 = 不限"
+      },
+      "quiet_hours": {
+        "description": "安静时段",
+        "type": "string",
+        "default": "01:00-08:00",
+        "hint": "此时间段不主动发送，格式 HH:MM-HH:MM，留空关闭"
+      },
+      "triggers": {
+        "description": "触发词表",
+        "type": "dict",
+        "default": {
+          "哈哈哈": "",
+          "笑死": "",
+          "呜呜": "",
+          "泪目": "",
+          "早安": "",
+          "晚安": "",
+          "6": "",
+          "666": ""
+        },
+        "hint": "触发词 → 角色名（空 = 随机）。同一消息命中多个词时取最长词"
+      }
+    },
+    "default": {}
+  }
+}

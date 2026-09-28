@@ -1,14 +1,61 @@
-# astrbot-plugin-helloworld
+# astrbot_plugin_moe_meme · 萌萌表情包
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+让 bot 在会话里发鸣潮表情包的 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 插件：指令点播 + 主动发送。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+数据源：[表情包仓鼠库](https://emoji.wuwa.games)（呜哇小站）——由鸣潮玩家自发众筹、共同整理的非官方表情包项目，内容采用 **CC BY-NC-SA 4.0** 协议、仅供个人非商业使用。本插件只做「现拉现转发」的随机引用，**不存储、不打包、不再分发任何素材**（图片地址为站方签发的短时效票券链接，约 16 分钟有效）。感谢站方与所有投稿画师。
 
-# Supports
+## 功能
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+### 指令
+
+| 指令 | 说明 |
+| --- | --- |
+| `/表情包` | 全库随机一张 |
+| `/表情包 爱弥斯` | 按角色随机：支持站方全名 / 英文 id（如 `aimisi`）/ 别名 / 模糊包含 |
+| `/表情包 列表` | 查看全部可用角色（含张数，按张数排序） |
+| `/表情包 帮助` | 查看帮助 |
+| `/表情包 白名单 开启\|关闭` | 管理员：把当前会话加入/移出指令白名单 |
+| `/表情包 主动 开启\|关闭` | 管理员：把当前会话加入/移出主动发送列表 |
+
+角色名解析优先级：别名精确 → 全名精确 → 模糊包含（多个命中取张数最多的角色）；都解析不出时按原文交给站方接口精确匹配。
+
+### 主动发送
+
+1. **LLM 自主发表情**（默认开）：注册 LLM 工具 `send_sticker`，对话中由模型自主判断氛围（玩梗、搞笑、开心、惊讶）决定是否发一个表情，每次回复最多一次。
+2. **关键词概率触发**（默认关）：群消息命中触发词（哈哈哈 / 笑死 / 早安 / 晚安…，词表可配置、可映射角色）时按概率（默认 4%）发一张表情。
+
+防打扰护栏（两类主动共享同一份会话状态）：
+
+- 只有显式加入「主动发送列表」的会话才会收到主动表情（**不随白名单的「空=全放行」**，必须逐会话开启）；
+- 会话冷却（LLM 默认 10 分钟 / 关键词默认 30 分钟）、每日上限（默认 20 张/会话）、安静时段（默认 01:00-08:00）；
+- 会话内最近 20 张去重（指令与主动共用），连续撞上去重最多重试 2 次。
+
+### 白名单
+
+`whitelist_sessions` **非空** → 仅列表内会话响应 `/表情包`；**留空** → 所有会话可用。白名单外的会话静默忽略（不暴露指令存在）；「白名单/主动」管理子指令不受白名单限制（否则白名单外的管理员没法把自己加进来）。
+
+## 配置
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `whitelist_sessions` | `[]` | 指令白名单（UMO 列表），空 = 全放行 |
+| `proactive_sessions` | `[]` | 主动发送会话列表 |
+| `aliases` | `{}` | 角色别名表：简称 → 站方全名，如 `小爱=爱弥斯` |
+| `recent_dedup` | `20` | 会话内最近 N 张去重，0 关闭 |
+| `api_token` | `""` | 站方 API Token（可选）。官方暂未公布携带方式，按 Bearer 头预留，留空即匿名 |
+| `llm_sticker` | — | `enable` / `cooldown_minutes`(10) / `daily_cap`(20) / `quiet_hours`(01:00-08:00) |
+| `keyword_sticker` | — | `enable`(false) / `probability`(0.04) / `cooldown_minutes`(30) / `daily_cap`(20) / `quiet_hours` / `triggers` |
+
+> `aliases` 与 `triggers` 是自由键值表，若 WebUI 编辑不便，可直接改插件配置文件后热重载。
+
+## 安装
+
+在 AstrBot 插件市场或通过仓库地址安装：`https://github.com/windExplorer/astrbot_plugin_moe_meme`
+
+无额外 Python 依赖（`aiohttp` 为 AstrBot 自带）。
+
+## 已知限制
+
+- 站方 Token 的调用携带方式官方未公布（仅提示「长期稳定使用建议 Token」），当前匿名调用可用；`api_token` 配置位按 `Authorization: Bearer` 预留。
+- 部分表情为 GIF（600KB+），QQ 官方接口等适配器可能压缩或拒绝发送，NapCat 实测正常。
+- 「列表」数据来自站方图鉴接口（缓存 24h），站方结构大改时列表可能暂时不可用（不影响随机发图）。
