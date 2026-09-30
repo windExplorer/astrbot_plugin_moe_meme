@@ -51,7 +51,7 @@ _GATE_REASON_TEXT = {
     "astrbot_plugin_moe_meme",
     "windExplorer",
     "萌萌表情包：/表情包 随机或按角色发鸣潮表情，支持主动发送",
-    "v0.2.0",
+    "v0.2.1",
 )
 class MoeMemePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -247,20 +247,19 @@ class MoeMemePlugin(Star):
 
     # ---------- 跨插件 API（供其他插件调用） ----------
 
-    async def api_random_sticker_path(self, character: str = "") -> "str | None":
-        """随机取一张表情，落本地缓存后返回文件路径；失败返回 None。
+    async def api_random_sticker(self, character: str = "") -> "dict | None":
+        """随机取一张表情，返回 {path, url, character, sticker_id}；数据源失败返回 None。
 
-        供其他插件（如 astrbot_plugin_moe_meme 之外的联动方）调用：
+        供其他插件（如 astrbot_plugin_mine_chat）跨插件调用：
         `context.get_registered_star("astrbot_plugin_moe_meme").star_cls
-        .api_random_sticker_path()`。token/本地缓存/去重都由本插件管理，
-        调用方拿到的直接是可发送的本地文件。
+        .api_random_sticker()`。token/本地缓存/去重都由本插件管理。
 
-        约定：
-        - **不做**冷却/每日上限/安静时段（那是本插件三个主动通道自己的策略），
+        - path：本地缓存文件路径（缓存目录不可用或下载失败时为 None）；
+        - url：站方票券链（约 16 分钟有效，仅供即取即发，调用方拿到 path
+          为空时可用它兜底发送）；
+        - **不做**冷却/每日上限/安静时段（那是本插件主动通道自己的策略），
           调用方自行节流，别拿这个当无限图床刷；
-        - character 支持角色全名/别名/模糊（走 _resolve），传空 = 全库随机；
-        - 数据源未初始化、拉取失败或缓存目录不可用时返回 None（本插件指令侧
-          会回退直发票券链，但跨插件调用方拿不到 URL，直接按失败处理）。
+        - character 支持角色全名/别名/模糊（走 _resolve），传空 = 全库随机。
         """
         if self.source is None:
             return None
@@ -272,7 +271,20 @@ class MoeMemePlugin(Star):
         except Exception as e:
             logger.warning(f"[萌萌表情包] 跨插件取图失败: {e}")
             return None
-        return await self._acquire_local(stk)
+        path = await self._acquire_local(stk)
+        return {
+            "path": path,
+            "url": stk.url,
+            "character": stk.character,
+            "sticker_id": stk.sticker_id,
+        }
+
+    async def api_random_sticker_path(self, character: str = "") -> "str | None":
+        """v0.2.0 的旧 API：只返回本地路径。新调用方请用 api_random_sticker。"""
+        payload = await self.api_random_sticker(character)
+        if not payload:
+            return None
+        return payload.get("path")
 
     # ---------- 指令回执：直发（绕开核心的「回复时 @ 发送者」） ----------
     #

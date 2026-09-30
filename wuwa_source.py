@@ -97,15 +97,17 @@ class WuwaSource:
         self._char_counts: dict[str, int] | None = None
         self._char_ts: float = 0.0
         self._char_lock = asyncio.Lock()
+        # 站方未公布 Token 携带方式；按 Bearer 头实现，配置留空即匿名。
+        # 凭据**不挂在会话级 headers**：图片链对 Bearer 的态度未知（实测出现过
+        # 401），改为按请求携带，下载流程可做「无凭据 → 带凭据」的两段重试。
+        self._auth_headers: dict[str, str] = (
+            {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        )
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            headers = {"User-Agent": USER_AGENT}
-            if self._token:
-                # 站方未公布 Token 携带方式；按 Bearer 头实现，配置留空即匿名。
-                headers["Authorization"] = f"Bearer {self._token}"
             self._session = aiohttp.ClientSession(
-                timeout=self._timeout, headers=headers
+                timeout=self._timeout, headers={"User-Agent": USER_AGENT}
             )
         return self._session
 
@@ -121,7 +123,7 @@ class WuwaSource:
             params["character"] = name
         session = await self._ensure_session()
         try:
-            async with session.get(RANDOM_URL, params=params) as resp:
+            async with session.get(RANDOM_URL, params=params, headers=self._auth_headers) as resp:
                 if resp.status == 404:
                     code = "CHARACTER_EMPTY"
                     try:
@@ -156,23 +158,37 @@ class WuwaSource:
         )
 
     async def download(self, sticker: Sticker) -> bytes:
-        """下载表情图片字节（票券链的 307 跳转由 aiohttp 自动跟随）。"""
+        """下载表情图片字节（票券链的 307 跳转由 aiohttp 自动跟随）。
+
+        两段重试（仅当配置了 Token）：先**不带**凭据请求——图片链大概率公开，
+        且实测存在「API 带 Bearer 正常、图片链带 Bearer 反而 401」的环境；
+        401 时再带凭据重试一次，覆盖「图片链需要鉴权」的站方行为。
+        """
         session = await self._ensure_session()
-        try:
-            async with session.get(sticker.url) as resp:
-                if resp.status != 200:
-                    raise SourceError(
-                        f"HTTP_{resp.status}", f"图片下载返回 {resp.status}"
-                    )
-                return await resp.read()
-        except SourceError:
-            raise
-        except asyncio.TimeoutError:
-            raise SourceError("timeout", "图片下载超时") from None
-        except aiohttp.ClientError as e:
-            raise SourceError(
-                "network", f"图片下载网络异常（{e.__class__.__name__}）"
-            ) from e
+        attempts: list[dict[str, str]] = [{}]
+        if self._token:
+            attempts.append(self._auth_headers)
+        last_status = 0
+        for headers in attempts:
+            try:
+                async with session.get(sticker.url, headers=headers) as resp:
+                    if resp.status == 401 and headers is not attempts[-1]:
+                        last_status = resp.status
+                        continue
+                    if resp.status != 200:
+                        raise SourceError(
+                            f"HTTP_{resp.status}", f"图片下载返回 {resp.status}"
+                        )
+                    return await resp.read()
+            except SourceError:
+                raise
+            except asyncio.TimeoutError:
+                raise SourceError("timeout", "图片下载超时") from None
+            except aiohttp.ClientError as e:
+                raise SourceError(
+                    "network", f"图片下载网络异常（{e.__class__.__name__}）"
+                ) from e
+        raise SourceError(f"HTTP_{last_status}", f"图片下载返回 {last_status}")
 
     async def characters(self, force: bool = False) -> dict[str, int]:
         """角色名 → 张数（archive-index 聚合，TTL 24h）。失败抛 SourceError。"""
@@ -193,7 +209,7 @@ class WuwaSource:
                 return self._char_counts
             session = await self._ensure_session()
             try:
-                async with session.get(ARCHIVE_INDEX_URL) as resp:
+                async with session.get(ARCHIVE_INDEX_URL, headers=self._auth_headers) as resp:
                     if resp.status != 200:
                         raise SourceError(
                             f"HTTP_{resp.status}", f"角色列表接口返回 {resp.status}"

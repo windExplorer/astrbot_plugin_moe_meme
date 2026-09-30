@@ -1,9 +1,8 @@
-发布 v0.2.0：新增跨插件 API api_random_sticker_path
+发布 v0.2.1：图片下载 401 修复 + 跨插件 API 返回 URL 兜底
 
-- 其他插件经 context.get_registered_star(...).star_cls 调用，拿到
-  本地缓存文件路径，可直接发送；token/缓存/去重由本插件管理
-- API 不做冷却/限额/安静时段（主动通道自有策略），调用方自行节流
-- 首个使用方：astrbot_plugin_mine_chat 的主动表情通道，
-  替代其此前直拉 wuwa_source 模块自建连接的做法
-- 顺带修正 @register 装饰器滞留的 v0.1.0 版本号（与 metadata 同步）
-- README 新增「跨插件 API」用法文档
+- 凭据不再挂会话级 headers，改为按请求携带；下载配置了 Token 时
+  先无凭据、401 再带凭据重试，同时覆盖「Bearer 导致 401」与
+  「图片链需要鉴权」两种站方行为
+- 新增 api_random_sticker(character) -> dict {path, url, character,
+  sticker_id}：本地缓存失败时调用方仍可拿票券链 URL 兜底发送；
+  旧 api_random_sticker_path 保留为兼容包装

@@ -1,5 +1,17 @@
 # 更新日志
 
+## v0.2.1 (2026-10-01)
+
+**实测反馈修复**（来自 astrbot_plugin_mine_chat 联动运行日志）：
+
+1. **图片下载 401**：票券链下载偶发 `401`（「本地缓存下载失败（回退直发链接）: 图片下载返回 401」）。
+   根因方向：凭据原先挂在会话级 headers，图片链对 Bearer 的态度未知。改为
+   **按请求携带凭据** + 下载做两段重试（配置了 Token 时先无凭据、401 再带凭据），
+   同时覆盖「图片链不认 Bearer」与「图片链需要鉴权」两种站方行为。
+2. **跨插件 API 升级**：新增 `api_random_sticker(character="") -> dict | None`，
+   返回 `{path, url, character, sticker_id}`——本地缓存失败时仍有票券链 URL 可供
+   调用方兜底发送（旧 `api_random_sticker_path` 保留为兼容包装）。
+
 ## v0.2.0 (2026-10-01)
 
 **新增跨插件 API**：`api_random_sticker_path(character="") -> str | None`
