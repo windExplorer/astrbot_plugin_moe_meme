@@ -19,7 +19,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import At, Image
+from astrbot.api.message_components import At, Image, Plain
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.star.filter.event_message_type import EventMessageType
@@ -238,6 +238,38 @@ class MoeMemePlugin(Star):
             return Image.fromFileSystem(path)
         return Image.fromURL(stk.url)
 
+    # ---------- 指令回执：直发（绕开核心的「回复时 @ 发送者」） ----------
+    #
+    # 为什么指令回执不用 `yield event.plain_result(...)` / `event.image_result(...)`：
+    # AstrBot 的 `ResultDecorateStage` 会给「只含 Plain / Image 的结果链」在最前面插一个
+    # `At(发送者)`，开关是全局的 `platform_settings.reply_with_mention`（群聊里开了就每条都 @）。
+    # 表情包回执恰好就是一张 Image —— 于是每条指令回图都自带一个 @；而插 At 发生在所有插件
+    # `on_decorating_result` 钩子之后，插件撤不掉，只能绕开：直发（`event.send`）不进结果链。
+    # 顺带的好处：`_has_send_oper` 置位，本轮不会再触发一次默认 LLM 回复。
+    # 代价：结果链上的「长文本转图 / 分段回复 / TTS / 回复前缀」等装饰对指令回执不再生效
+    # （长列表会原样发文字），是否 @ 触发者改由本插件的 `at_sender` 决定。
+    # 同工作区 `astrbot_plugin_model_panel` 的指令走的就是这一套。
+
+    @staticmethod
+    async def _send_text(event: AstrMessageEvent, text: str) -> bool:
+        """直发一条文本回执。失败只记日志，不回抛（别让回执带崩整轮流程）。"""
+        try:
+            await event.send(MessageChain(chain=[Plain(str(text))]))
+            return True
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 文本直发失败（忽略）: {e}")
+            return False
+
+    @staticmethod
+    async def _send_chain(event: AstrMessageEvent, chain: list) -> bool:
+        """直发一个消息链（表情图用）。"""
+        try:
+            await event.send(MessageChain(chain=chain))
+            return True
+        except Exception as e:
+            logger.error(f"[萌萌表情包] 消息直发失败: {e}")
+            return False
+
     # ---------- 指令 ----------
 
     @filter.command("表情包")
@@ -251,23 +283,22 @@ class MoeMemePlugin(Star):
 
         # 会话管理子指令不受白名单限制：否则白名单外的管理员没法把自己加进来
         if head in ("白名单", "主动"):
-            async for r in self._manage_lists(event, head, parts[1] if len(parts) > 1 else ""):
-                yield r
+            await self._manage_lists(event, head, parts[1] if len(parts) > 1 else "")
             return
 
         if not self._whitelist_ok(umo):
             return  # 白名单外静默忽略，不暴露指令存在
 
         if head in ("帮助", "help", "菜单"):
-            yield event.plain_result(HELP_TEXT)
+            await self._send_text(event, HELP_TEXT)
             return
 
         if head in ("列表", "list", "角色"):
-            yield event.plain_result(await self._list_text())
+            await self._send_text(event, await self._list_text())
             return
 
         if self.source is None:
-            yield event.plain_result("表情包源还没初始化好，稍后再试。")
+            await self._send_text(event, "表情包源还没初始化好，稍后再试。")
             return
 
         character = None
@@ -278,21 +309,22 @@ class MoeMemePlugin(Star):
             stk = await self._fetch_sticker(character, umo)
         except wuwa_source.SourceError as e:
             if e.code == "CHARACTER_EMPTY":
-                yield event.plain_result(f"没找到「{text}」的表情包，试试 /表情包 列表")
+                await self._send_text(event, f"没找到「{text}」的表情包，试试 /表情包 列表")
             else:
-                yield event.plain_result(f"表情包拉取失败：{e}")
+                await self._send_text(event, f"表情包拉取失败：{e}")
             return
         except Exception as e:
             logger.error(f"[萌萌表情包] 指令拉取异常: {e}")
-            yield event.plain_result("表情包拉取失败，稍后再试。")
+            await self._send_text(event, "表情包拉取失败，稍后再试。")
             return
         self._gate_state(umo).remember_recent(stk.sticker_id, self._dedup_keep())
         path = await self._acquire_local(stk)
-        result = event.image_result(path) if path else event.image_result(stk.url)
+        chain: list = [self._image_component(stk, path)]
         if self._cfg().get("at_sender", False):
             # 可选 @ 触发者（默认不 @）：把 At 组件插到图前面
-            result.chain.insert(0, At(qq=event.get_sender_id()))
-        yield result
+            chain.insert(0, At(qq=event.get_sender_id(), name=event.get_sender_name()))
+        if not await self._send_chain(event, chain):
+            await self._send_text(event, "表情包发送失败，稍后再试。")
 
     async def _list_text(self) -> str:
         try:
@@ -310,7 +342,7 @@ class MoeMemePlugin(Star):
 
     async def _manage_lists(self, event: AstrMessageEvent, which: str, action: str):
         if not event.is_admin():
-            yield event.plain_result("该操作仅 AstrBot 管理员可用。")
+            await self._send_text(event, "该操作仅 AstrBot 管理员可用。")
             return
         umo = event.unified_msg_origin
         key = "whitelist_sessions" if which == "白名单" else "proactive_sessions"
@@ -322,7 +354,7 @@ class MoeMemePlugin(Star):
 
         if action in ("开启", "打开", "加入", "on", "enable"):
             if now_in:
-                yield event.plain_result(f"本会话已在{label}列表中。")
+                await self._send_text(event, f"本会话已在{label}列表中。")
                 return
             was_empty = not lst
             lst.append(umo)
@@ -333,20 +365,20 @@ class MoeMemePlugin(Star):
                 if which == "白名单" and was_empty
                 else ""
             )
-            yield event.plain_result(f"已开启本会话的{label}。{extra}")
+            await self._send_text(event, f"已开启本会话的{label}。{extra}")
             return
         if action in ("关闭", "移除", "off", "disable"):
             if not now_in:
-                yield event.plain_result(f"本会话本就不在{label}列表中。")
+                await self._send_text(event, f"本会话本就不在{label}列表中。")
                 return
             lst.remove(umo)
             self.config[key] = lst
             self._save()
-            yield event.plain_result(f"已关闭本会话的{label}。")
+            await self._send_text(event, f"已关闭本会话的{label}。")
             return
         state = "已开启" if now_in else "未开启"
-        yield event.plain_result(
-            f"本会话{label}：{state}。用「/表情包 {which} 开启|关闭」修改。"
+        await self._send_text(
+            event, f"本会话{label}：{state}。用「/表情包 {which} 开启|关闭」修改。"
         )
 
     # ---------- 主动发送 1：LLM 工具（对话中由模型自主决定） ----------

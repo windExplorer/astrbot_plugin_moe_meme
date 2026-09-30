@@ -1,5 +1,26 @@
 # 更新日志
 
+## v0.1.2 (2026-09-30)
+
+**现象**：`/表情包` 出图时 bot 会先 @ 发指令的人；配置里把「指令发送时 @ 触发者」（`at_sender`）关掉后**依然 @**。
+
+**根因**：这个 @ 不是插件加的，是 AstrBot 核心加的。`astrbot/core/pipeline/result_decorate/stage.py` 的 `ResultDecorateStage` 对「只含 `Plain` / `Image` 的结果链」会在最前面插一个 `At(发送者)`，开关是**全局**的 `platform_settings.reply_with_mention`（「回复时 @ 发送人」），且只在群聊生效、私聊不 @。而：
+
+- 表情包回执恰好就是一张 `Image`（`[Image]` 满足 `can_decorate`），所以每条指令回图都自带一个 @；
+- 插 At 发生在**所有插件 `on_decorating_result` 钩子跑完之后**，插件撤不掉它 —— `at_sender` 只能在「自己再加一个 At」和「什么都不做」之间选择，关了也不会让核心不加。
+
+**修复（后端）**
+
+- 指令回执改为**直发**：新增 `_send_text()` / `_send_chain()`（`await event.send(MessageChain(...))`，与 llm 工具 / 关键词触发 / 跟图兜底三条路径一致），`/表情包` 与 `白名单|主动` 管理子指令的所有回执（图 + 文字）不再走结果链，因此不再被核心装饰、也不会被插 At。是否 @ 触发者改由本插件的 `at_sender` 决定（开启时由插件自己插 `At`，带上昵称）。
+- 顺带收益：`event.send()` 会置 `_has_send_oper`，本轮不会再触发一次默认 LLM 回复。
+- **代价（刻意接受）**：结果链上的后续装饰对指令回执不再生效 —— 长文本转图、分段回复、TTS、回复前缀。对表情图无影响；`/表情包 列表` 这类长文本会原样发文字，不再被核心转成图片。做法与同工作区 `astrbot_plugin_model_panel` 的指令一致。
+
+**同步**：`_conf_schema.json` 的 `at_sender` 提示、README（配置表 + 已知限制）、`docs/设计说明.md`（新增设计决定第 9 条）都写明「指令回执直发、不受全局 @ 设置影响」。
+
+**验证**：`uv run --no-project --python 3.12 python -m compileall -q main.py sticker_gate.py sticker_cache.py wuwa_source.py` 通过；`tests/test_gate.py` / `tests/test_cache.py` / `tests/test_wuwa_match.py`（后者需 `--with aiohttp`）全过；`_conf_schema.json` JSON 校验通过；zip 复核套一层结构。
+
+版本 v0.1.1 -> v0.1.2。
+
 ## v0.1.1 (2026-09-29)
 
 **需求**：把每次取到的表情存起来；指令发送可选 @ 触发者（默认不 @）；bot 每次回复按概率决定是否跟一张表情。

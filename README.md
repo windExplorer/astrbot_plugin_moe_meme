@@ -45,7 +45,7 @@
 | `proactive_sessions` | `[]` | 主动发送会话列表 |
 | `aliases` | `{}` | 角色别名表：简称 → 站方全名，如 `小爱=爱弥斯` |
 | `recent_dedup` | `20` | 会话内最近 N 张去重，0 关闭 |
-| `at_sender` | `false` | 指令出图时是否 @ 触发者（默认不 @） |
+| `at_sender` | `false` | 指令出图时是否 @ 触发者（默认不 @）。指令回执直发，不受全局「回复时 @ 发送人」影响 |
 | `cache_max_files` | `500` | 本地缓存上限（张），超过淘汰最旧，0 = 不淘汰 |
 | `api_token` | `""` | 站方 API Token（可选）。官方暂未公布携带方式，按 Bearer 头预留，留空即匿名 |
 | `llm_sticker` | — | `enable`(true) / `cooldown_minutes`(10) / `daily_cap`(20) / `quiet_hours`(01:00-08:00) |
@@ -62,6 +62,7 @@
 
 ## 已知限制
 
+- 指令回执走 **直发**（`event.send`）而不是结果链，因此不会被 AstrBot 全局的「回复时 @ 发送人」（`platform_settings.reply_with_mention`）加上 @ —— 是否 @ 触发者只由 `at_sender` 决定。代价是结果链上的「长文本转图 / 分段回复 / TTS / 回复前缀」等装饰对指令回执不再生效（`/表情包 列表` 会原样发文字）。
 - 站方 Token 的调用携带方式官方未公布（仅提示「长期稳定使用建议 Token」），当前匿名调用可用；`api_token` 配置位按 `Authorization: Bearer` 预留。
 - 部分表情为 GIF（600KB+），QQ 官方接口等适配器可能压缩或拒绝发送，NapCat 实测正常。
 - 「列表」数据来自站方图鉴接口（缓存 24h），站方结构大改时列表可能暂时不可用（不影响随机发图）。
