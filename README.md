@@ -60,6 +60,24 @@
 
 无额外 Python 依赖（`aiohttp` 为 AstrBot 自带）。
 
+## 跨插件 API（v0.2.0+）
+
+其他插件要发表情不必自己连站方接口，直接调用本插件：
+
+```python
+meta = context.get_registered_star("astrbot_plugin_moe_meme")
+if meta and meta.activated and meta.star_cls:
+    path = await meta.star_cls.api_random_sticker_path()        # 随机一张
+    # 或 api_random_sticker_path("爱弥斯") 指定角色（全名/别名/模糊均可）
+    if path:
+        ...  # Image.fromFileSystem(path) 直接发送
+```
+
+- 返回**本地缓存文件路径**；数据源未初始化、拉取失败或缓存目录不可用时返回 `None`；
+- token、缓存目录、最近发过去重都由本插件管理，调用方零配置；
+- **不做**冷却/每日上限/安静时段（那是本插件主动通道自己的策略），调用方自行节流；
+- 已有使用方：`astrbot_plugin_mine_chat`（萌萌日程）的主动表情通道。
+
 ## 已知限制
 
 - 指令回执走 **直发**（`event.send`）而不是结果链，因此不会被 AstrBot 全局的「回复时 @ 发送人」（`platform_settings.reply_with_mention`）加上 @ —— 是否 @ 触发者只由 `at_sender` 决定。代价是结果链上的「长文本转图 / 分段回复 / TTS / 回复前缀」等装饰对指令回执不再生效（`/表情包 列表` 会原样发文字）。

@@ -51,7 +51,7 @@ _GATE_REASON_TEXT = {
     "astrbot_plugin_moe_meme",
     "windExplorer",
     "萌萌表情包：/表情包 随机或按角色发鸣潮表情，支持主动发送",
-    "v0.1.0",
+    "v0.2.0",
 )
 class MoeMemePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -244,6 +244,35 @@ class MoeMemePlugin(Star):
         if path:
             return Image.fromFileSystem(path)
         return Image.fromURL(stk.url)
+
+    # ---------- 跨插件 API（供其他插件调用） ----------
+
+    async def api_random_sticker_path(self, character: str = "") -> "str | None":
+        """随机取一张表情，落本地缓存后返回文件路径；失败返回 None。
+
+        供其他插件（如 astrbot_plugin_moe_meme 之外的联动方）调用：
+        `context.get_registered_star("astrbot_plugin_moe_meme").star_cls
+        .api_random_sticker_path()`。token/本地缓存/去重都由本插件管理，
+        调用方拿到的直接是可发送的本地文件。
+
+        约定：
+        - **不做**冷却/每日上限/安静时段（那是本插件三个主动通道自己的策略），
+          调用方自行节流，别拿这个当无限图床刷；
+        - character 支持角色全名/别名/模糊（走 _resolve），传空 = 全库随机；
+        - 数据源未初始化、拉取失败或缓存目录不可用时返回 None（本插件指令侧
+          会回退直发票券链，但跨插件调用方拿不到 URL，直接按失败处理）。
+        """
+        if self.source is None:
+            return None
+        q = (character or "").strip()
+        try:
+            resolved = await self._resolve(q) if q else None
+            # 固定伪 umo：跨插件取图与站内指令各记各的「最近发过」去重表
+            stk = await self._fetch_sticker(resolved or (q or None), "__cross_plugin__")
+        except Exception as e:
+            logger.warning(f"[萌萌表情包] 跨插件取图失败: {e}")
+            return None
+        return await self._acquire_local(stk)
 
     # ---------- 指令回执：直发（绕开核心的「回复时 @ 发送者」） ----------
     #

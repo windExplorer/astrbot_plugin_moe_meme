@@ -1,5 +1,14 @@
 # 更新日志
 
+## v0.2.0 (2026-10-01)
+
+**新增跨插件 API**：`api_random_sticker_path(character="") -> str | None`
+
+- 其他插件可通过 `context.get_registered_star("astrbot_plugin_moe_meme").star_cls.api_random_sticker_path()` 取一张随机（或指定角色的）表情，返回**本地缓存文件路径**，直接可用 `Image.fromFileSystem` 发送；
+- token（api_token）、本地缓存目录、最近发过去重都由本插件管理，调用方零配置——首个使用方是 `astrbot_plugin_mine_chat`（萌萌日程）的主动表情通道，替代了此前「直接 import 本插件 wuwa_source 模块自建连接」的做法；
+- API **不做**冷却/每日上限/安静时段（那是本插件主动通道自己的策略），调用方自行节流；
+- 顺带把 `@register` 装饰器里滞留的 `v0.1.0` 版本号修正，与 metadata.yaml 保持同步。
+
 ## v0.1.3 (2026-09-30)
 
 **现象**：回复概率跟图（`reply_sticker`）基本不生效，概率设成 1 也一样；顺带发现关键词概率触发（默认关）也从未生效过。
