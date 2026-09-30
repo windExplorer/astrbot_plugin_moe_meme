@@ -1,8 +1,0 @@
-发布 v0.2.1：图片下载 401 修复 + 跨插件 API 返回 URL 兜底
-
-- 凭据不再挂会话级 headers，改为按请求携带；下载配置了 Token 时
-  先无凭据、401 再带凭据重试，同时覆盖「Bearer 导致 401」与
-  「图片链需要鉴权」两种站方行为
-- 新增 api_random_sticker(character) -> dict {path, url, character,
-  sticker_id}：本地缓存失败时调用方仍可拿票券链 URL 兜底发送；
-  旧 api_random_sticker_path 保留为兼容包装

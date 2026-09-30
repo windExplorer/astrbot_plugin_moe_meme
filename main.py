@@ -5,7 +5,8 @@
 数据源：表情包仓鼠库 https://emoji.wuwa.games（CC BY-NC-SA，只现拉现转发，不存储素材）。
 
 白名单语义：whitelist_sessions 非空 → 仅列表内会话响应指令；留空 → 所有会话可用。
-主动发送只对显式开启（proactive_sessions）的会话生效，不随白名单「空=全放行」。
+主动发送同理：proactive_sessions 非空 → 仅列表内会话生效；留空 → 所有会话生效
+（防打扰交给冷却 / 每日上限 / 安静时段兜底）。
 """
 
 # 注意：不要使用 from __future__ import annotations —— AstrBot 按对象同一性识别
@@ -37,7 +38,7 @@ HELP_TEXT = (
     "/表情包 角色名      指定角色，如 /表情包 爱弥斯（支持全名/英文id/别名/模糊）\n"
     "/表情包 列表        查看可用角色\n"
     "/表情包 白名单 开启|关闭   管理员：本会话是否可用表情包指令\n"
-    "/表情包 主动 开启|关闭     管理员：本会话是否允许主动发表情"
+    "/表情包 主动 开启|关闭     管理员：本会话是否允许主动发表情（留空=全放行）"
 )
 
 _GATE_REASON_TEXT = {
@@ -51,7 +52,7 @@ _GATE_REASON_TEXT = {
     "astrbot_plugin_moe_meme",
     "windExplorer",
     "萌萌表情包：/表情包 随机或按角色发鸣潮表情，支持主动发送",
-    "v0.2.1",
+    "v0.2.2",
 )
 class MoeMemePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -153,7 +154,9 @@ class MoeMemePlugin(Star):
 
     def _in_proactive(self, umo: str) -> bool:
         lst = self._cfg().get("proactive_sessions")
-        return isinstance(lst, list) and umo in lst
+        if not isinstance(lst, list) or not lst:
+            return True  # 留空 = 所有会话都允许主动发送
+        return umo in lst
 
     def _save(self) -> None:
         try:
@@ -409,13 +412,21 @@ class MoeMemePlugin(Star):
             self.config[key] = lst
             self._save()
             extra = (
-                f"注意：白名单此前为空（原本所有会话可用），现在只有列表内会话能用指令了。"
-                if which == "白名单" and was_empty
+                f"注意：列表此前为空（原本所有会话都放行），现在只有列表内会话生效了。"
+                if was_empty
                 else ""
             )
             await self._send_text(event, f"已开启本会话的{label}。{extra}")
             return
         if action in ("关闭", "移除", "off", "disable"):
+            if not lst:
+                await self._send_text(
+                    event,
+                    f"{label}列表为空 = 所有会话都放行，无法只关闭单个会话；"
+                    f"如需精细控制，请先把要放行的会话逐个「/表情包 {which} 开启」"
+                    "建好显式名单后再来关闭本会话。",
+                )
+                return
             if not now_in:
                 await self._send_text(event, f"本会话本就不在{label}列表中。")
                 return
@@ -424,7 +435,10 @@ class MoeMemePlugin(Star):
             self._save()
             await self._send_text(event, f"已关闭本会话的{label}。")
             return
-        state = "已开启" if now_in else "未开启"
+        if not lst:
+            state = "已开启（列表为空 = 全部会话放行）"
+        else:
+            state = "已开启" if now_in else "未开启"
         await self._send_text(
             event, f"本会话{label}：{state}。用「/表情包 {which} 开启|关闭」修改。"
         )

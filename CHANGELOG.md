@@ -1,5 +1,25 @@
 # 更新日志
 
+## v0.2.2 (2026-10-01)
+
+**需求**：主动发送不再要求逐会话显式开启——用户实测没人愿意在每个群里发 `/表情包 主动 开启`，配置留空却得到「未开启」的提示，语义反直觉。
+
+**变更**：`proactive_sessions`（主动发送会话）语义改为与 `whitelist_sessions`（指令白名单）一致：
+
+- **留空 = 所有会话都放行**（原版：留空 = 一个都不开，必须显式 opt-in）；
+- 填入后仅列表内会话生效，`/表情包 主动 开启|关闭` 指令保留，用于免手填 UMO 地管理显式名单；
+- 防打扰不靠这个列表兜底，仍由冷却 / 每日上限 / 安静时段 / 会话去重约束（三类主动共享同一份闸门状态）。
+
+**连带修正**（原语义下诚实、新语义下误导的提示）：
+
+- `/表情包 主动 关闭`：列表为空时不再回「本会话本就不在列表中」，改为说明「列表为空 = 全部放行，无法只关单个会话」并给出建立显式名单的路径；
+- `/表情包 主动`（查状态）：列表为空时显示「已开启（列表为空 = 全部会话放行）」，不再显示「未开启」；
+- 同步修正文档字符串、帮助文本、`_conf_schema.json` 的 `proactive_sessions` hint、README 与 `docs/设计说明.md` 的语义描述。
+
+**验证**：`uv run --no-project --python 3.12 python -m compileall -q main.py sticker_gate.py sticker_cache.py wuwa_source.py` 通过；`tests/test_static.py` / `test_gate.py` / `test_cache.py` / `test_wuwa_match.py`（后者需 `--with aiohttp`）全过；zip 复核套一层结构。
+
+版本 v0.2.1 -> v0.2.2。
+
 ## v0.2.1 (2026-10-01)
 
 **实测反馈修复**（来自 astrbot_plugin_mine_chat 联动运行日志）：
