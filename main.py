@@ -18,7 +18,12 @@ from datetime import datetime
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, MessageChain, filter
+from astrbot.api.event import (
+    AstrMessageEvent,
+    MessageChain,
+    ResultContentType,
+    filter,
+)
 from astrbot.api.message_components import At, Image, Plain
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.star.filter.command import GreedyStr
@@ -80,6 +85,8 @@ class MoeMemePlugin(Star):
         self._sticker_files: dict[str, str] = {}
         # 回复概率跟图在本事件上的暂存键（on_llm_response 写，decorating/after_sent 消费）
         self._reply_extra = "moe_meme_reply_sticker"
+        # 跟图「未发送原因」的会话级记录：同一原因只打一条 INFO，免得每条回复都刷屏
+        self._skip_notes: dict[str, str] = {}
 
     async def initialize(self) -> None:
         """生命周期钩子：异常会导致整个插件加载失败，这里全程兜底。"""
@@ -441,7 +448,7 @@ class MoeMemePlugin(Star):
     async def on_keyword(self, event: AstrMessageEvent):
         """低优先级监听全部消息做关键词触发；纯协程不 yield，绝不打断消息管道。"""
         try:
-            self._keyword_tick(event)
+            await self._keyword_tick(event)
         except Exception as e:
             logger.warning(f"[萌萌表情包] 关键词触发异常（已忽略）: {e}")
 
@@ -496,33 +503,74 @@ class MoeMemePlugin(Star):
         logger.info(f"[萌萌表情包] 关键词触发发送表情：{stk.character or '随机'}")
 
     # ---------- 主动发送 3：回复概率跟图（bot 每次回复按概率决定是否带一张表情） ----------
+    #
+    # 交付路径（三条，取决于这一轮回复长什么样）：
+    #   1. 普通回复 → on_decorating_result 把图追加到回复链末尾（文字 + 图一条消息）；
+    #   2. 流式回复 → 文本已随流发完，最终那个 STREAMING_FINISH 结果 respond 阶段会直接丢弃，
+    #      追加等于丢掉，所以改在 on_decorating_result 里单独补发（顺序天然在回复之后）；
+    #   3. 本轮回复会被核心「长文本转图」整体替换成一张渲染图时 → 不追加，
+    #      留给 after_message_sent 补发（那时连渲染图都已经发出去了）。
+    # 其余原因导致不发送，都会留一条 INFO（同一会话同一原因只记一次）。
 
     @filter.on_llm_response()
     async def on_llm_reply(self, event: AstrMessageEvent, response=None):
-        """LLM 回复完成后按概率决定是否跟一张表情；命中则暂存到事件上，
-        由 on_decorating_result（非流式，并入回复消息）或 after_message_sent（兜底，单独补发）消费。"""
+        """LLM 回复完成后按概率决定是否跟一张表情；命中则暂存到事件上等交付钩子消费。"""
         try:
-            self._reply_sticker_tick(event)
+            await self._reply_sticker_tick(event)
         except Exception as e:
             logger.warning(f"[萌萌表情包] 回复跟图判定异常（已忽略）: {e}")
+
+    def _note_skip(self, umo: str, reason: str, text: str) -> None:
+        """记录「跟图没发」的原因：同会话同原因只打一条 INFO（换原因会再打）。"""
+        if self._skip_notes.get(umo) == reason:
+            return
+        self._skip_notes[umo] = reason
+        if len(self._skip_notes) > 500:
+            self._skip_notes.clear()
+        logger.info(f"[萌萌表情包] 回复跟图未发送：{text}")
+
+    def _gate_reason_text(self, reason: str, sub: dict) -> str:
+        if reason == sticker_gate.REASON_COOLDOWN:
+            return (
+                f"撞上会话冷却（本项 {self._int(sub, 'cooldown_minutes', 10)} 分钟）——"
+                "冷却与每日上限是「LLM 工具 / 关键词触发 / 回复跟图」三类共用一个计数，"
+                "想每次回复都跟图可把本项冷却设为 0"
+            )
+        if reason == sticker_gate.REASON_DAILY_CAP:
+            return (
+                f"当日主动表情已达上限（本项 {self._int(sub, 'daily_cap', 20)} 张，"
+                "三类主动共用一个计数）"
+            )
+        if reason == sticker_gate.REASON_QUIET:
+            return f"现在是安静时段（本项 {sub.get('quiet_hours') or '未设置'}）"
+        return str(reason)
 
     async def _reply_sticker_tick(self, event: AstrMessageEvent) -> None:
         sub = self._sub("reply_sticker")
         if not sub.get("enable", False):
-            return
+            return  # 功能没开，不打扰用户
         umo = event.unified_msg_origin
         if not self._in_proactive(umo):
+            self._note_skip(
+                umo,
+                "not_proactive",
+                "本会话不在「主动发送」列表里（跟图只对列表内会话生效），"
+                "管理员发 /表情包 主动 开启 即可",
+            )
             return
         try:
             prob = float(sub.get("probability", 0.1))
         except (TypeError, ValueError):
             prob = 0.1
         if random.random() >= max(0.0, min(1.0, prob)):
+            logger.debug(f"[萌萌表情包] 回复跟图未命中概率（probability={prob}）")
             return
         reason = self._gate_check(umo, sub)
         if reason:
+            self._note_skip(umo, reason, self._gate_reason_text(reason, sub))
             return
         if self.source is None:
+            self._note_skip(umo, "no_source", "表情包源不可用（看插件初始化日志）")
             return
         char = str(sub.get("character") or "").strip()
         try:
@@ -537,52 +585,92 @@ class MoeMemePlugin(Star):
         event.set_extra(
             self._reply_extra, {"path": path, "url": stk.url, "id": stk.sticker_id}
         )
+        self._skip_notes.pop(umo, None)
+        logger.debug(f"[萌萌表情包] 回复跟图已就绪：{stk.character or '随机'}")
 
     def _reply_sticker_component(self, payload: dict) -> Image:
         if payload.get("path"):
             return Image.fromFileSystem(payload["path"])
         return Image.fromURL(payload.get("url") or "")
 
+    async def _send_reply_sticker(
+        self, event: AstrMessageEvent, payload: dict, *, source: str
+    ) -> bool:
+        """单独补发一张跟图表情（不走结果链），成功才记账。"""
+        if not await self._send_chain(event, [self._reply_sticker_component(payload)]):
+            return False
+        sticker_gate.record(
+            self._gate_state(event.unified_msg_origin),
+            datetime.now(),
+            sticker_id=str(payload.get("id") or ""),
+            dedup_keep=self._dedup_keep(),
+        )
+        logger.info(f"[萌萌表情包] 回复跟图已发出（{source}）")
+        return True
+
+    def _t2i_replaces_chain(self, result) -> bool:
+        """预判核心的「长文本转图」会不会把整条结果链换成一张渲染图。
+
+        `ResultDecorateStage` 是在跑完 `on_decorating_result` 钩子**之后**才做 t2i，
+        命中就直接 `result.chain = [Image(...)]` —— 追加进去的表情会被一起丢掉。
+        这里按同一套判断（开关 + 链首连续 Plain 的渲染长度阈值）提前让路。
+        """
+        try:
+            cfg = self.context.get_config() or {}
+            if not ((result.use_t2i_ is None and cfg.get("t2i")) or result.use_t2i_):
+                return False
+            threshold = max(int(cfg.get("t2i_word_threshold") or 150), 50)
+        except Exception:
+            return False
+        parts = []
+        for comp in result.chain:
+            if isinstance(comp, Plain):
+                parts.append("\n\n" + comp.text)
+            else:
+                break
+        return len("".join(parts)) > threshold
+
     @filter.on_decorating_result()
     async def attach_reply_sticker(self, event: AstrMessageEvent):
-        """非流式：把概率命中的表情并进本轮回复链（文字 + 图一条消息）。"""
+        """把概率命中的表情交付出去：能并进回复链就并，不能就单独补发。"""
         try:
             payload = event.get_extra(self._reply_extra)
             if not payload:
                 return
-            event.set_extra(self._reply_extra, None)
             result = event.get_result()
             if result is None or not isinstance(getattr(result, "chain", None), list):
                 return
+            if result.result_content_type == ResultContentType.STREAMING_FINISH:
+                # 流式：文本已经发完了，这个结果 respond 阶段不会再发，只能自己补发
+                event.set_extra(self._reply_extra, None)
+                await self._send_reply_sticker(event, payload, source="流式回复后补发")
+                return
+            if self._t2i_replaces_chain(result):
+                # 不消费 payload：留给 after_message_sent（那时回复渲染图已发出，顺序正确）
+                logger.info(
+                    "[萌萌表情包] 回复跟图：本轮回复会被「长文本转图」替换，改为回复后补发"
+                )
+                return
+            event.set_extra(self._reply_extra, None)
             result.chain.append(self._reply_sticker_component(payload))
-            sub = self._sub("reply_sticker")
             sticker_gate.record(
                 self._gate_state(event.unified_msg_origin),
                 datetime.now(),
                 sticker_id=str(payload.get("id") or ""),
                 dedup_keep=self._dedup_keep(),
             )
-            logger.info(
-                f"[萌萌表情包] 回复跟图已并入消息（probability={sub.get('probability')}）"
-            )
+            logger.info("[萌萌表情包] 回复跟图已并入回复消息")
         except Exception as e:
             logger.warning(f"[萌萌表情包] 回复跟图挂载失败: {e}")
 
     @filter.after_message_sent()
     async def send_reply_sticker_fallback(self, event: AstrMessageEvent):
-        """流式输出等 on_decorating_result 不生效的场景：回复发出后单独补发。"""
+        """回复已发出但没能并进回复链的场景（如长文本转图）：单独补发。"""
         try:
             payload = event.get_extra(self._reply_extra)
             if not payload:
                 return
             event.set_extra(self._reply_extra, None)
-            await event.send(MessageChain(chain=[self._reply_sticker_component(payload)]))
-            sticker_gate.record(
-                self._gate_state(event.unified_msg_origin),
-                datetime.now(),
-                sticker_id=str(payload.get("id") or ""),
-                dedup_keep=self._dedup_keep(),
-            )
-            logger.info("[萌萌表情包] 回复跟图已补发（decorating 未消费）")
+            await self._send_reply_sticker(event, payload, source="回复后补发")
         except Exception as e:
             logger.warning(f"[萌萌表情包] 回复跟图兜底发送失败: {e}")

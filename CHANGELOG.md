@@ -1,5 +1,41 @@
 # 更新日志
 
+## v0.1.3 (2026-09-30)
+
+**现象**：回复概率跟图（`reply_sticker`）基本不生效，概率设成 1 也一样；顺带发现关键词概率触发（默认关）也从未生效过。
+
+**根因：两个钩子在调用协程方法时漏了 `await`。**
+
+```python
+    async def on_llm_reply(self, event, response=None):
+        try:
+            self._reply_sticker_tick(event)   # ← 少了 await，协程对象被创建后直接丢掉
+```
+```python
+    async def on_keyword(self, event):
+        try:
+            self._keyword_tick(event)         # ← 同上
+```
+
+Python 不会因此抛异常（只在 GC 时留一条 `RuntimeWarning: coroutine ... was never awaited`），AstrBot 也不会把它算作插件异常，所以这两个判定函数**一次都没执行过** —— 跟图与关键词触发从 v0.1.0 起就是完全死的：挂载钩子里永远没有 payload，什么都没发生。
+
+**修复**
+
+- 两处补 `await`。跟图与关键词触发现在真的会跑了。
+- 流式输出下的交付方式改对：流式回复的最终结果是 `STREAMING_FINISH`，而 `ResultDecorateStage` 会被 `RespondStage` 直接丢弃（不会再发一次），把表情追加进那条链等于丢掉。改为在 `on_decorating_result` 里**单独补发**（文本已随流发完，顺序天然在回复之后）。
+- 预判核心的**长文本转图**：命中时核心会把整条结果链替换成一张渲染图（后加的图会一起丢），此时不追加、留给 `after_message_sent` 补发（那时渲染图已发出）。
+- 「没跟图」现在有迹可循：`enable` 开着却发不出来时，按会话+原因打一条 INFO（会话不在主动发送列表 / 冷却 / 每日上限 / 安静时段 / 数据源不可用），同原因只打一次，不刷屏。冷却那条会顺带提示「冷却与限额是三类主动共用一个计数，想每次都跟图可把冷却设为 0」。
+
+**新增 `tests/test_static.py`**（纯 AST，不需要 astrbot 运行时）：守三类真出过的静默坑 ——
+
+1. `self.<协程方法>(...)` 漏 `await`（本版那两个 bug）；
+2. 事件钩子（`on_llm_response` / `on_decorating_result` / `after_message_sent` 等）写成了异步生成器 —— AstrBot 的 `call_event_hook` 里有 `assert inspect.iscoroutinefunction`，带 `yield` 会在运行期直接抛异常；
+3. 指令回执又走回结果链（`event.plain_result / image_result / chain_result`）—— 会被核心按全局「回复时 @ 发送人」插 `At`（v0.1.2 改直发就是为了这个）。
+
+**验证**：`compileall` 通过；`tests/test_static.py` / `test_gate.py` / `test_cache.py` / `test_wuwa_match.py` 全过；把 v0.1.2 的 `main.py` 喂给 `test_static.py` 的检查逻辑，能精确报出那两行漏 `await`（回放验证守卫有效）；zip 复核 9 条目套一层。
+
+版本 v0.1.2 -> v0.1.3。
+
 ## v0.1.2 (2026-09-30)
 
 **现象**：`/表情包` 出图时 bot 会先 @ 发指令的人；配置里把「指令发送时 @ 触发者」（`at_sender`）关掉后**依然 @**。
